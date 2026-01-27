@@ -1,11 +1,15 @@
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 import requests
 
 app = Flask(__name__)
 
+# ✅ CORS ENABLE (ALL ORIGINS)
+CORS(app)
+
 @app.route("/")
 def home():
-    return "Backend running"
+    return "Backend running with CORS"
 
 @app.route("/data")
 def data():
@@ -13,7 +17,6 @@ def data():
         symbol = request.args.get("symbol", "BTC-USD")
         tf = request.args.get("tf", "1m")
 
-        # timeframe mapping
         if tf == "1m":
             granularity = 60
         elif tf == "5m":
@@ -22,7 +25,6 @@ def data():
             granularity = 60
 
         url = f"https://api.exchange.coinbase.com/products/{symbol}/candles"
-
         params = {
             "granularity": granularity,
             "limit": 100
@@ -31,7 +33,6 @@ def data():
         r = requests.get(url, params=params, timeout=10)
         candles = r.json()
 
-        # Coinbase error check
         if not isinstance(candles, list):
             return jsonify({"error": candles}), 500
 
