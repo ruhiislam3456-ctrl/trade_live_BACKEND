@@ -4,6 +4,7 @@ import websocket
 import threading
 import json
 import time
+import collections
 
 app = Flask(__name__)
 CORS(app)
@@ -11,37 +12,59 @@ CORS(app)
 # =========================
 # GLOBAL STATE
 # =========================
-STATE = {}   # { "BTC-USD": { candle } }
+STATE = {}
+HISTORY = collections.defaultdict(list)
 
 # =========================
 # COINBASE WEBSOCKET
 # =========================
 def on_message(ws, message):
     data = json.loads(message)
-
     if data.get("type") != "ticker":
         return
 
     symbol = data["product_id"]
     price = float(data["price"])
     ts = int(time.time())
+    candle_time = ts - (ts % 60)
 
     candle = STATE.get(symbol)
 
-    if candle is None or ts - candle["time"] >= 60:
-        # new candle
-        STATE[symbol] = {
-            "time": ts - (ts % 60),
+    if candle is None or candle["time"] != candle_time:
+        candle = {
+            "time": candle_time,
             "open": price,
             "high": price,
             "low": price,
             "close": price
         }
+        STATE[symbol] = candle
     else:
-        # running candle update
         candle["high"] = max(candle["high"], price)
         candle["low"] = min(candle["low"], price)
         candle["close"] = price
+
+    prices = HISTORY[symbol]
+    prices.append(price)
+    if len(prices) > 100:
+        prices.pop(0)
+
+    def ema(period):
+        if len(prices) < period:
+            return None
+        k = 2 / (period + 1)
+        e = prices[0]
+        for p in prices[1:]:
+            e = p * k + e * (1 - k)
+        return round(e, 2)
+
+    candle["ema9"] = ema(9)
+    candle["ema21"] = ema(21)
+
+    if candle["ema9"] and candle["ema21"]:
+        candle["trend"] = "BULLISH" if candle["ema9"] > candle["ema21"] else "BEARISH"
+    else:
+        candle["trend"] = "WAIT"
 
 
 def ws_thread():
@@ -52,9 +75,13 @@ def ws_thread():
 
     sub = {
         "type": "subscribe",
-        "channels": [{"name": "ticker", "product_ids": [
-            "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD", "ADA-USD"
-        ]}]
+        "channels": [{
+            "name": "ticker",
+            "product_ids": [
+                "BTC-USD", "ETH-USD", "BNB-USD",
+                "SOL-USD", "XRP-USD", "ADA-USD"
+            ]
+        }]
     }
 
     ws.on_open = lambda ws: ws.send(json.dumps(sub))
@@ -77,7 +104,6 @@ def live():
     if not c:
         return jsonify([])
     return jsonify([c])
-
 
 @app.route("/favicon.ico")
 def favicon():
