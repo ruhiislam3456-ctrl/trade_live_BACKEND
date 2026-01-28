@@ -1,137 +1,69 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-import threading, time, json
-import websocket
+import requests
+import time
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # CORS FIX – Netlify / Mobile / Browser সব ঠিক
 
-TIMEFRAME = 60  # 1 minute candle
-
-STATE = {}
-
-PAIRS = ["BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "ADA-USD"]
-
-def ema(prev, price, period):
-    k = 2 / (period + 1)
-    return price * k + prev * (1 - k)
-
-def start_ws(pair):
-    def on_message(ws, message):
-        data = json.loads(message)
-        if data.get("type") != "ticker":
-            return
-
-        price = float(data["price"])
-        now = int(time.time())
-
-        s = STATE[pair]
-
-        # first tick
-        if s["start"] is None:
-            s["start"] = now - (now % TIMEFRAME)
-            s["candle"] = {
-                "time": s["start"],
-                "open": price,
-                "high": price,
-                "low": price,
-                "close": price
-            }
-            s["ema9"] = price
-            s["ema21"] = price
-            return
-
-        # new candle
-        if now >= s["start"] + TIMEFRAME:
-            s["start"] += TIMEFRAME
-            s["candle"] = {
-                "time": s["start"],
-                "open": price,
-                "high": price,
-                "low": price,
-                "close": price
-            }
-
-        c = s["candle"]
-        c["close"] = price
-        if price > c["high"]:
-            c["high"] = price
-        if price < c["low"]:
-            c["low"] = price
-
-        s["ema9"] = ema(s["ema9"], price, 9)
-        s["ema21"] = ema(s["ema21"], price, 21)
-
-    def on_open(ws):
-        ws.send(json.dumps({
-            "type": "subscribe",
-            "channels": [{
-                "name": "ticker",
-                "product_ids": [pair]
-            }]
-        }))
-
-    ws = websocket.WebSocketApp(
-        "wss://ws-feed.exchange.coinbase.com",
-        on_open=on_open,
-        on_message=on_message
-    )
-
-    ws.run_forever()
-
-def init_pair(pair):
-    STATE[pair] = {
-        "start": None,
-        "candle": None,
-        "ema9": None,
-        "ema21": None
-    }
-    threading.Thread(target=start_ws, args=(pair,), daemon=True).start()
-
-for p in PAIRS:
-    init_pair(p)
-
-@app.route("/live")
-def live():
-    pair = request.args.get("pair", "BTC-USD")
-
-    if pair not in STATE:
-        return jsonify({"error": "pair not supported"})
-
-    s = STATE[pair]
-    c = s["candle"]
-
-    if c is None:
-        return jsonify({"status": "waiting"})
-
-    body = abs(c["close"] - c["open"])
-    rng = c["high"] - c["low"]
-    strength = round((body / rng) * 100, 2) if rng != 0 else 0
-
-    trend = "SIDEWAYS"
-    if s["ema9"] > s["ema21"]:
-        trend = "BULL"
-    elif s["ema9"] < s["ema21"]:
-        trend = "BEAR"
-
-    highlight = strength >= 70 and trend != "SIDEWAYS"
-
-    return jsonify({
-        "time": c["time"],
-        "open": round(c["open"], 2),
-        "high": round(c["high"], 2),
-        "low": round(c["low"], 2),
-        "close": round(c["close"], 2),
-        "ema9": round(s["ema9"], 2),
-        "ema21": round(s["ema21"], 2),
-        "trend": trend,
-        "strength": strength,
-        "highlight": highlight
-    })
-
+# -------------------------
+# HOME TEST ROUTE
+# -------------------------
 @app.route("/")
-def root():
+def home():
     return jsonify({"status": "backend running"})
 
+
+# -------------------------
+# FAVICON FIX (OPTIONAL)
+# -------------------------
+@app.route("/favicon.ico")
+def favicon():
+    return "", 204
+
+
+# -------------------------
+# LIVE MARKET DATA
+# -------------------------
+@app.route("/data")
+def data():
+    symbol = request.args.get("symbol", "BTC-USD")
+    tf = request.args.get("tf", "1m")
+
+    # timeframe mapping (seconds)
+    tf_map = {
+        "1m": 60,
+        "5m": 300
+    }
+
+    granularity = tf_map.get(tf, 60)
+
+    url = f"https://api.exchange.coinbase.com/products/{symbol}/candles"
+    params = {
+        "granularity": granularity
+    }
+
+    r = requests.get(url, params=params)
+    if r.status_code != 200:
+        return jsonify([])
+
+    raw = r.json()
+
+    candles = []
+    for c in raw[::-1]:  # reverse for chart
+        candles.append({
+            "time": int(c[0]),
+            "low": c[1],
+            "high": c[2],
+            "open": c[3],
+            "close": c[4]
+        })
+
+    return jsonify(candles)
+
+
+# -------------------------
+# RUN
+# -------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=5000)
